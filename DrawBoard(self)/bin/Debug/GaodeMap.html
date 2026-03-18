@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="initial-scale=1.0, user-scalable=no">
+    <title>高德地图 - 航线绘制</title>
+    <style>
+        html, body, #container {
+            height: 100%;
+            width: 100%;
+            margin: 0;
+            padding: 0;
+        }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+
+    <script src="https://webapi.amap.com/loader.js"></script>
+    <script>
+        let map = null;
+        let mouseTool = null;
+        let currentPolyline = null;
+        let currentPath = [];
+        // 标记是否处于绘制模式
+        let isDrawing = false;
+
+        function initMap() {
+            AMapLoader.load({
+                key: '5f227350180b7229856e2f91c22bf9b3',
+                version: '2.0',
+                plugins: ['AMap.Scale', 'AMap.ToolBar', 'AMap.MouseTool']
+            }).then((AMap) => {
+                const satellite = new AMap.TileLayer.Satellite();
+                const roadNet = new AMap.TileLayer.RoadNet();
+
+                map = new AMap.Map('container', {
+                    zoom: 11,
+                    center: [116.397428, 39.90923],
+                    viewMode: '2D',
+                    layers: [satellite, roadNet],
+                    // 核心修改1：关闭地图默认的双击放大、滚轮缩放（避免干扰绘制）
+                    doubleClickZoom: false,
+                    scrollWheel: true // 滚轮缩放保留，按需可改为false
+                });
+
+                map.addControl(new AMap.Scale());
+                map.addControl(new AMap.ToolBar());
+
+                // 核心修改2：初始化鼠标工具并绑定全局事件
+                mouseTool = new AMap.MouseTool(map);
+                console.log('✅ 鼠标工具初始化完成');
+
+                // 监听绘制中事件（实时显示折线）
+                mouseTool.on('draw', (event) => {
+                    if (event.obj instanceof AMap.Polyline) {
+                        currentPath = event.obj.getPath().map(p => [p.lng, p.lat]);
+                        if (currentPolyline) map.remove(currentPolyline);
+                        currentPolyline = event.obj;
+                        console.log('✅ 航线点更新：', currentPath.length);
+                        // 绘制完成后退出绘制模式
+                        isDrawing = false;
+                        alert('✅ 航线绘制完成！共' + currentPath.length + '个点');
+                    }
+                });
+
+                // 核心修改3：监听地图点击，绘制模式下阻止默认行为
+                map.on('click', (e) => {
+                    if (isDrawing) {
+                        console.log('✅ 绘制模式下点击，添加航点');
+                        // 阻止事件冒泡，避免触发地图默认操作
+                        e.preventDefault();
+                        e.stopPropagation();
+                    } else {
+                        // 非绘制模式下，正常发送经纬度给C#
+                        if (window.chrome.webview) {
+                            window.chrome.webview.postMessage({
+                                type: 'mapClick',
+                                lng: e.lnglat.getLng(),
+                                lat: e.lnglat.getLat()
+                            });
+                        }
+                    }
+                });
+
+                console.log('✅ 地图加载成功，绘制模式已就绪');
+            }).catch(e => {
+                console.error('❌ 地图加载失败：', e);
+                alert('地图加载失败：' + e.message);
+            });
+        }
+
+        // ---------- 供C#调用的全局函数（核心重构） ----------
+        window.startDrawingPolyline = function() {
+            console.log('✅ C#调用绘制函数，当前状态：', isDrawing);
+            if (!map || !mouseTool) {
+                alert('❌ 地图工具未就绪，请等待3秒后重试！');
+                return;
+            }
+
+            // 核心修改4：强制关闭所有工具，激活绘制模式
+            mouseTool.close();
+            isDrawing = true;
+            // 重新配置折线样式，确保可见
+            mouseTool.polyline({
+                strokeColor: '#FF0000', // 改为红色，更醒目
+                strokeWeight: 4,        // 加粗，避免被地图遮挡
+                strokeOpacity: 1,       // 不透明
+                // 关键配置：允许点击加点，双击结束
+                isOutline: false
+            });
+
+            alert('✅ 绘制模式已激活！\n操作：\n1. 点击地图添加航点（多次点击）\n2. 双击地图结束绘制\n3. 绘制中点击不会放大地图');
+        };
+
+        window.getCurrentPath = function() {
+            const result = JSON.stringify(currentPath);
+            console.log('✅ C#获取路径：', result);
+            return result;
+        };
+
+        window.clearPolyline = function() {
+            if (currentPolyline) map.remove(currentPolyline);
+            currentPolyline = null;
+            currentPath = [];
+            isDrawing = false;
+            alert('✅ 航线已清除！');
+        };
+
+        // 页面加载完成后初始化
+        window.onload = initMap;
+    </script>
+</body>
+</html>

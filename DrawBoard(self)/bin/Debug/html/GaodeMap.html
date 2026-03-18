@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="initial-scale=1.0, user-scalable=no">
+    <title>高德地图 - 可靠绘制（DOM事件）</title>
+    <style>
+        html, body, #container {
+            height: 100%;
+            width: 100%;
+            margin: 0;
+            padding: 0;
+        }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+
+    <script src="https://webapi.amap.com/loader.js"></script>
+    <script>
+        // ---------- 全局变量 ----------
+        let map = null;
+        let currentPath = [];            // 已确定的点数组 [[lng, lat], ...]
+        let polyline = null;              // 已确定的折线对象
+        let tempPolyline = null;          // 预览折线对象
+        let isDrawing = false;             // 是否正在绘制
+
+        // ---------- 初始化地图 ----------
+        function initMap() {
+        AMapLoader.load({
+        key: '5f227350180b7229856e2f91c22bf9b3',  // 你的 Key
+        version: '2.0',
+        plugins: ['AMap.Scale', 'AMap.ToolBar']
+        }).then((AMap) => {
+        const satellite = new AMap.TileLayer.Satellite();
+        const roadNet = new AMap.TileLayer.RoadNet();
+
+        map = new AMap.Map('container', {
+        zoom: 16,
+        center: [115.828482,28.651026],
+        viewMode: '2D',
+        layers: [satellite, roadNet],
+        doubleClickZoom: false,   // 关闭双击放大，避免干扰
+        scrollWheel: true
+        });
+
+        map.addControl(new AMap.Scale());
+        map.addControl(new AMap.ToolBar());
+
+        // 等待地图就绪后添加 DOM 监听
+        map.on('complete', () => {
+        console.log('地图加载完成，添加 DOM 监听');
+        setupDOMListeners(AMap);
+        });
+
+        // 如果地图已经就绪（例如从缓存加载），直接设置监听
+        if (map.getCenter()) {
+        setupDOMListeners(AMap);
+        }
+        }).catch(e => {
+        console.error('❌ 地图加载失败：', e);
+        alert('地图加载失败：' + e.message);
+        });
+        }
+
+        // 设置 DOM 事件监听
+        function setupDOMListeners(AMap) {
+        const container = document.getElementById('container');
+        if (!container) return;
+
+        // ---------- 单击事件 ----------
+        container.addEventListener('click', (e) => {
+        // 获取鼠标相对于容器的像素坐标
+        const rect = container.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        const pixel = new AMap.Pixel(x, y);
+        const lngLat = map.containerToLngLat(pixel);
+        const lng = lngLat.getLng();
+        const lat = lngLat.getLat();
+
+        console.log(`[DOM单击] 坐标: ${lng}, ${lat}, 绘制模式: ${isDrawing}`);
+
+        if (isDrawing) {
+        // 添加航点
+        currentPath.push([lng, lat]);
+
+        // 更新永久折线
+        if (polyline) map.remove(polyline);
+        polyline = new AMap.Polyline({
+        path: currentPath,
+        strokeColor: '#FF0000',
+        strokeWeight: 4,
+        strokeOpacity: 1
+        });
+        map.add(polyline);
+
+        // 清除预览线
+        if (tempPolyline) {
+        map.remove(tempPolyline);
+        tempPolyline = null;
+        }
+
+        // 实时发送当前所有点给 C#
+        if (window.chrome && window.chrome.webview) {
+        window.chrome.webview.postMessage({
+        type: 'pointAdded',
+        points: currentPath
+        });
+        }
+        console.log(`点已添加，当前点数: ${currentPath.length}`);
+        } else {
+        // 非绘制模式：发送点击坐标给 C#（用于状态栏显示）
+        if (window.chrome && window.chrome.webview) {
+        window.chrome.webview.postMessage({
+        type: 'mapClick',
+        lng: lng,
+        lat: lat
+        });
+        }
+        }
+        });
+
+        // ---------- 鼠标移动预览 ----------
+        container.addEventListener('mousemove', (e) => {
+        if (!isDrawing || currentPath.length === 0) return;
+
+        const rect = container.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        const pixel = new AMap.Pixel(x, y);
+        const lngLat = map.containerToLngLat(pixel);
+        const mousePos = [lngLat.getLng(), lngLat.getLat()];
+        const lastPoint = currentPath[currentPath.length - 1];
+
+        // 移除旧的预览线
+        if (tempPolyline) map.remove(tempPolyline);
+
+        // 创建新的预览线（从最后一个点到鼠标当前位置）
+        tempPolyline = new AMap.Polyline({
+        path: [lastPoint, mousePos],
+        strokeColor: '#FFA500',
+        strokeWeight: 3,
+        strokeOpacity: 0.8,
+        strokeStyle: 'dashed'
+        });
+        map.add(tempPolyline);
+        });
+
+        // ---------- 双击结束绘制 ----------
+        container.addEventListener('dblclick', (e) => {
+        if (isDrawing) {
+        isDrawing = false;
+        if (tempPolyline) {
+        map.remove(tempPolyline);
+        tempPolyline = null;
+        }
+        console.log('绘制结束，总点数：' + currentPath.length);
+        if (window.chrome && window.chrome.webview) {
+        window.chrome.webview.postMessage({
+        type: 'drawFinished',
+        points: currentPath
+        });
+        }
+        }
+        // 阻止默认双击行为（地图放大等）
+        e.preventDefault();
+        e.stopPropagation();
+        });
+
+        // 可选：阻止地图自带的事件，避免干扰（但一般不影响）
+        map.on('click', (e) => e.stopPropagation());
+        map.on('dblclick', (e) => e.stopPropagation());
+        }
+
+        // ---------- 供 C# 调用的函数 ----------
+        window.startDrawingPolyline = function() {
+        if (!map) {
+        alert('地图未初始化');
+        return;
+        }
+        // 清除旧数据
+        window.clearPolyline();
+        isDrawing = true;
+        console.log('🎯 绘制模式已激活');
+        alert('绘制模式已激活：单击添加点，双击结束绘制；移动鼠标可预览线段');
+        // 发送空数组清空表格（可选）
+        if (window.chrome && window.chrome.webview) {
+        window.chrome.webview.postMessage({
+        type: 'pointAdded',
+        points: []
+        });
+        }
+        };
+
+        window.getCurrentPath = function() {
+        return JSON.stringify(currentPath);
+        };
+
+        window.clearPolyline = function() {
+        if (polyline) map.remove(polyline);
+        if (tempPolyline) map.remove(tempPolyline);
+        polyline = null;
+        tempPolyline = null;
+        currentPath = [];
+        isDrawing = false;
+        console.log('🧹 航线已清除');
+        if (window.chrome && window.chrome.webview) {
+        window.chrome.webview.postMessage({
+        type: 'pointAdded',
+        points: []
+        });
+        }
+        };
+
+        // 启动地图
+        initMap();
+    </script>
+</body>
+</html>
